@@ -1,16 +1,3 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "api/**/*.js",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "**/*",
-      "use": "@vercel/static",
-      "config": {
-        "ignore": ["api/**", "node_modules/**", ".*"]
-      }
-    }
-  ]
+  "version": 2
 }
