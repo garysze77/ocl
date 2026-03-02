@@ -59,18 +59,6 @@
         const data = await res.json();
         const token = data.token;
 
-        // Fullscreen for all devices
-        const videoElement = document.querySelector('video');
-        if (document.documentElement.requestFullscreen) {
-          document.documentElement.requestFullscreen().catch(() => {});
-        } else if (videoElement.webkitEnterFullscreen) {
-          videoElement.webkitEnterFullscreen();
-        }
-
-        // Show player
-        document.getElementById('setup').style.display = 'none';
-        document.getElementById('player').style.display = 'block';
-
         // Leave previous stage if any
         if (stage) {
           await stage.leave();
@@ -89,6 +77,10 @@
           }
         };
 
+        // Show player first
+        document.getElementById('setup').style.display = 'none';
+        document.getElementById('player').style.display = 'block';
+
         // Create stage and join
         stage = new IVSBroadcastClient.Stage(token, strategy);
 
@@ -101,6 +93,12 @@
             streams.forEach((stream) => {
               videoEl.srcObject.addTrack(stream.mediaStreamTrack);
             });
+            // Request fullscreen after video is ready
+            if (videoEl.requestFullscreen) {
+              videoEl.requestFullscreen().catch(() => {});
+            } else if (videoEl.webkitEnterFullscreen) {
+              videoEl.webkitEnterFullscreen();
+            }
           }
         );
 
