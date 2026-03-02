@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>IVS Realtime Player</title>
+  <script src="https://web-broadcast.live-video.net/1.32.0/amazon-ivs-web-broadcast.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+    #setup { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: linear-gradient(135deg, #1a1a2e, #16213e); color: #fff; }
+    #setup h1 { margin-bottom: 20px; }
+    #setup input { padding: 15px; font-size: 16px; border-radius: 8px; border: none; background: rgba(255,255,255,0.1); color: #fff; width: 90%; max-width: 400px; margin-bottom: 15px; }
+    #setup button { padding: 15px 30px; font-size: 16px; background: #ff6b35; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    #setup button:disabled { background: #666; }
+    #player { display: none; width: 100%; height: 100vh; }
+    #player video { width: 100%; height: 100%; object-fit: contain; }
+  </style>
+</head>
+<body>
+  <div id="setup">
+    <h1>OCL PLAYER</h1>
+    <div id="msg" style="margin-bottom: 15px; color: #888;">Loading SDK...</div>
+    <button id="start" disabled>START</button>
+  </div>
+  <div id="player">
+    <video playsinline muted autoplay></video>
+  </div>
+  <script>
+    // Wait for SDK to be ready
+    function waitForSDK() {
+      if (typeof IVSBroadcastClient !== 'undefined') {
+        document.getElementById('msg').textContent = 'SDK Ready';
+        document.getElementById('msg').style.color = '#4caf50';
+        document.getElementById('start').disabled = false;
+        return;
+      }
+      document.getElementById('msg').textContent = 'Loading SDK...';
+      setTimeout(waitForSDK, 200);
+    }
+
+    waitForSDK();
+
+    let stage = null;
+    const videoEl = document.querySelector('video');
+
+    const STAGE_ARN = 'arn:aws:ivs:ap-northeast-1:763625926828:stage/x59Y2OJEUFpB';
+
+    document.getElementById('start').onclick = async () => {
+      const arn = STAGE_ARN;
+
+      try {
+        // Get token from backend
+        const res = await fetch('/api/token', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({stageArn: arn})
+        });
+        const data = await res.json();
+        const token = data.token;
+
+        // Fullscreen for all devices
+        const videoElement = document.querySelector('video');
+        if (document.documentElement.requestFullscreen) {
+          document.documentElement.requestFullscreen().catch(() => {});
+        } else if (videoElement.webkitEnterFullscreen) {
+          videoElement.webkitEnterFullscreen();
+        }
+
+        // Show player
+        document.getElementById('setup').style.display = 'none';
+        document.getElementById('player').style.display = 'block';
+
+        // Leave previous stage if any
+        if (stage) {
+          await stage.leave();
+        }
+
+        // Strategy for subscriber-only
+        const strategy = {
+          stageStreamsToPublish() {
+            return [];
+          },
+          shouldPublishParticipant() {
+            return false;
+          },
+          shouldSubscribeToParticipant(participant) {
+            return 'AUDIO_VIDEO'; // Subscribe to audio and video
+          }
+        };
+
+        // Create stage and join
+        stage = new IVSBroadcastClient.Stage(token, strategy);
+
+        // Listen for streams
+        stage.on(
+          IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED,
+          (participant, streams) => {
+            console.log('Streams added:', streams);
+            videoEl.srcObject = new MediaStream();
+            streams.forEach((stream) => {
+              videoEl.srcObject.addTrack(stream.mediaStreamTrack);
+            });
+          }
+        );
+
+        // Join stage
+        await stage.join();
+
+      } catch(e) {
+        console.error('Error:', e);
+        alert('Error: ' + e.message);
+        document.getElementById('setup').style.display = 'flex';
+        document.getElementById('player').style.display = 'none';
+      }
+    };
+  </script>
+</body>
+</html>
