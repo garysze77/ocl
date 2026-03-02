@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /var/www/ocl/.env*)",
+      "Bash(npm install -D vercel)",
+      "Bash(git init)",
+      "Bash(git remote add origin https://github.com/garysze77/ocl.git)",
+      "Bash(git add .gitignore README.md package.json package-lock.json vercel.json api/token.js public/index.html)",
+      "Bash(git commit:*)",
+      "Bash(git push -u origin master)",
+      "Bash(gh auth status)",
+      "Bash(git remote set-url origin git@github.com:garysze77/ocl.git)",
+      "Bash(git push -u origin master --force)",
+      "Bash(git fetch origin)",
+      "Bash(git add vercel.json)",
+      "Bash(\"Remove env config git commit -m - set in Vercel dashboard instead\")",
+      "Bash(git push)",
+      "Bash(git add -A)"
+    ],
+    "additionalDirectories": [
+      "/var/www/ocl"
+    ]
+  }
+}

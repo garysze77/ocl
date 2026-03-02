@@ -6,8 +6,11 @@
       "use": "@vercel/node"
     },
     {
-      "src": "public/**",
-      "use": "@vercel/static"
+      "src": "**/*",
+      "use": "@vercel/static",
+      "config": {
+        "ignore": ["api/**", "node_modules/**", ".*"]
+      }
     }
   ]
 }
