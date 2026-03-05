@@ -74,6 +74,9 @@
           },
           shouldSubscribeToParticipant(participant) {
             return 'AUDIO_VIDEO'; // Subscribe to audio and video
+          },
+          videoConstraints: {
+            maxResolution: { width: 1920, height: 1080 }
           }
         };
 
