@@ -145,15 +145,17 @@
           IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_LEFT,
           (participant) => {
             console.log('Participant left:', participant);
-            // Check if there are still participants with streams
+            // When a participant leaves, immediately check if any publisher remains
+            // If no publisher, we need to failover
             setTimeout(() => {
               const participants = stage.getParticipants();
-              const hasStreams = participants.some(p => p.streams && p.streams.length > 0);
-              if (!hasStreams) {
-                console.log('No participants with streams, triggering failover');
+              const publishers = participants.filter(p => p.isPublishing);
+              console.log('Remaining publishers:', publishers.length);
+              if (publishers.length === 0) {
+                console.log('No publishers left, triggering failover');
                 handleStreamError();
               }
-            }, 2000);
+            }, 1000);
           }
         );
 
@@ -174,7 +176,17 @@
 
         // Join stage
         await stage.join();
-        updateStatus('ivs', 'IVS WebRTC');
+
+        // Check if there's already a participant with streams
+        const participants = stage.getParticipants();
+        const hasStreams = participants.some(p => p.streams && p.streams.length > 0);
+        if (!hasStreams) {
+          // Wait for streams, but set a timeout
+          console.log('No streams yet, waiting...');
+          updateStatus('connecting', 'Waiting for stream...');
+        } else {
+          updateStatus('ivs', 'IVS WebRTC');
+        }
 
         // Start health check
         startHealthCheck();
