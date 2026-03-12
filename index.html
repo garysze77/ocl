@@ -56,6 +56,7 @@
     // Failover settings
     const FAILOVER_CHECK_INTERVAL = 5000; // Check every 5 seconds
     const MAX_RETRY_ATTEMPTS = 3;
+    const CASTR_TIMEOUT_MS = 60000; // Switch back to IVS after 60 seconds on Castr
 
     // ============ State ============
     let stage = null;
@@ -66,6 +67,7 @@
     let healthCheckTimer = null;
     let isManualStop = false;
     let isFailingOver = false; // Flag to prevent concurrent failover
+    let castrStartTime = 0; // Track when we switched to Castr
 
     const videoEl = document.querySelector('video');
     const statusEl = document.getElementById('status');
@@ -83,6 +85,9 @@
       if (isManualStop) return;
 
       updateStatus('connecting', 'Connecting to IVS...');
+
+      // Reset Castr timer
+      castrStartTime = 0;
 
       // Clear iframe first
       const iframe = document.getElementById('castr-iframe');
@@ -222,6 +227,7 @@
         if (iframe.src && iframe.src !== 'about:blank') {
           updateStatus('castr', 'Castr');
           retryAttempts = 0;
+          castrStartTime = Date.now(); // Record when we switched to Castr
           // Start health check for iframe
           startHealthCheck();
         }
@@ -268,8 +274,18 @@
           // Check if iframe is loaded (Castr via iframe)
           const iframe = document.getElementById('castr-iframe');
           const hasIframe = iframe && iframe.style.display !== 'none' && iframe.src && iframe.src !== 'about:blank';
-          isHealthy = hasIframe;
-          console.log('Castr health check:', { hasIframe, src: iframe?.src });
+
+          // Also check if we've been on Castr too long - time to try IVS again
+          const timeOnCastr = Date.now() - castrStartTime;
+          const shouldSwitchBack = timeOnCastr > CASTR_TIMEOUT_MS;
+
+          isHealthy = hasIframe && !shouldSwitchBack;
+          console.log('Castr health check:', { hasIframe, src: iframe?.src, timeOnCastr, shouldSwitchBack });
+
+          if (shouldSwitchBack) {
+            console.log('Switching back to IVS after timeout on Castr');
+            handleStreamError();
+          }
         }
 
         if (!isHealthy) {
