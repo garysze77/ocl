@@ -145,7 +145,30 @@
           IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_LEFT,
           (participant) => {
             console.log('Participant left:', participant);
-            // Could trigger failover if no one left, but be careful
+            // Check if there are still participants with streams
+            setTimeout(() => {
+              const participants = stage.getParticipants();
+              const hasStreams = participants.some(p => p.streams && p.streams.length > 0);
+              if (!hasStreams) {
+                console.log('No participants with streams, triggering failover');
+                handleStreamError();
+              }
+            }, 2000);
+          }
+        );
+
+        // Also listen for streams removed
+        stage.on(
+          IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_REMOVED,
+          (participant, streams) => {
+            console.log('Streams removed:', streams);
+            // Check if there are still any streams
+            const participants = stage.getParticipants();
+            const hasStreams = participants.some(p => p.streams && p.streams.length > 0);
+            if (!hasStreams) {
+              console.log('All streams removed, triggering failover');
+              handleStreamError();
+            }
           }
         );
 
@@ -235,14 +258,28 @@
         clearInterval(healthCheckTimer);
       }
 
+      // Also listen for video track ended
+      videoEl.onended = () => {
+        console.log('Video ended event');
+        handleStreamError();
+      };
+
+      videoEl.onerror = () => {
+        console.log('Video error event');
+        handleStreamError();
+      };
+
       healthCheckTimer = setInterval(() => {
         if (isManualStop) return;
 
         let isHealthy = false;
 
         if (currentSource === 'ivs') {
-          // Check if WebRTC has video
-          isHealthy = videoEl.readyState >= 2 && videoEl.videoWidth > 0;
+          // Check if WebRTC has video - also check if stream is active
+          const hasVideo = videoEl.srcObject && videoEl.srcObject.getVideoTracks().length > 0;
+          const isPlaying = videoEl.readyState >= 2 && !videoEl.paused;
+          isHealthy = hasVideo && isPlaying;
+          console.log('IVS health check:', { hasVideo, isPlaying, readyState: videoEl.readyState, videoWidth: videoEl.videoWidth });
         } else if (currentSource === 'castr') {
           // Check if HLS is still playing
           isHealthy = videoEl.readyState >= 2 && !videoEl.paused && videoEl.duration > 0;
