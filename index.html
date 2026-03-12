@@ -209,7 +209,9 @@
 
         hls.on(Hls.Events.ERROR, (event, data) => {
           console.error('HLS Error:', data);
-          if (data.fatal) {
+          // Handle network errors (including 404) as fatal
+          if (data.fatal && (data.type === 'networkError' || data.details === 'manifestLoadError')) {
+            console.log('Castr stream unavailable (404 or network error)');
             handleStreamError();
           }
         });
@@ -340,7 +342,9 @@
         hls = null;
       }
 
-      // Clear video
+      // Clear video and remove error handlers to prevent infinite loops
+      videoEl.onerror = null;
+      videoEl.onended = null;
       videoEl.srcObject = null;
       videoEl.src = '';
     }
