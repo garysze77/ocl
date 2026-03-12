@@ -141,33 +141,21 @@
           }
         );
 
-        // Listen for participant left - just trigger failover when anyone leaves
-        // (safer approach - assume stream ended)
-        stage.on(
-          IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_LEFT,
-          (participant) => {
-            console.log('Participant left:', participant);
-            // When a participant leaves, trigger failover
-            // This is safer since we can't reliably check remaining participants
-            if (!isManualStop) {
-              console.log('Participant left, triggering failover');
-              handleStreamError();
-            }
+        // Listen for participant left - trigger failover when participant leaves
+        stage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_LEFT, (participant) => {
+          console.log('Participant left:', participant);
+          if (!isManualStop && stage) {
+            handleStreamError();
           }
-        );
+        });
 
         // Also listen for streams removed
-        stage.on(
-          IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_REMOVED,
-          (participant, streams) => {
-            console.log('Streams removed:', streams);
-            // Trigger failover when streams are removed
-            if (!isManualStop) {
-              console.log('Streams removed, triggering failover');
-              handleStreamError();
-            }
+        stage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_REMOVED, (participant, streams) => {
+          console.log('Streams removed:', streams);
+          if (!isManualStop && stage) {
+            handleStreamError();
           }
-        );
+        });
 
         // Join stage
         await stage.join();
