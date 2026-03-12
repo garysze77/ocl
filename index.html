@@ -84,6 +84,16 @@
 
       updateStatus('connecting', 'Connecting to IVS...');
 
+      // Clear iframe first
+      const iframe = document.getElementById('castr-iframe');
+      iframe.src = 'about:blank';
+      iframe.style.display = 'none';
+
+      // Clear video error handlers to prevent interference
+      videoEl.onerror = null;
+      videoEl.onended = null;
+      videoEl.style.display = 'block';
+
       try {
         // Get token from backend
         const res = await fetch('/api/token', {
@@ -177,6 +187,10 @@
       if (isManualStop) return;
 
       updateStatus('connecting', 'Connecting to Castr...');
+
+      // Clear video error handlers first to prevent interference
+      videoEl.onerror = null;
+      videoEl.onended = null;
 
       // Stop HLS if exists
       if (hls) {
@@ -292,9 +306,12 @@
       retryAttempts++;
       updateStatus('connecting', `Failover attempt ${retryAttempts}...`);
 
-      // Determine next source
+      // Determine next source based on what we're currently on
+      // We need to know what failed - check what the source was BEFORE we set to 'connecting'
       let nextFunction;
-      if (currentSource === 'ivs' || currentSource === 'connecting') {
+      const previousSource = retryAttempts === 1 && currentSource === 'connecting' ? 'ivs' : currentSource;
+
+      if (previousSource === 'ivs' || previousSource === 'connecting') {
         // First try: IVS -> Castr, Second try: stay on Castr
         console.log('Failing over to Castr...');
         nextFunction = startCastr;
