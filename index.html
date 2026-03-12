@@ -83,6 +83,52 @@
       currentSource = source;
     }
 
+    // ============ Check IVS Availability ============
+    async function checkIVSAvailability() {
+      try {
+        // Get token from backend
+        const res = await fetch('/api/token', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({stageArn: STAGE_ARN})
+        });
+        if (!res.ok) return false;
+        const data = await res.json();
+        const token = data.token;
+
+        // Create a temporary stage to check availability
+        const strategy = {
+          stageStreamsToPublish() { return []; },
+          shouldPublishParticipant() { return false; },
+          shouldSubscribeToParticipant() { return 'AUDIO_VIDEO'; },
+          videoConstraints: { maxResolution: { width: 1920, height: 1080 } }
+        };
+
+        const tempStage = new IVSBroadcastClient.Stage(token, strategy);
+        let hasStreams = false;
+
+        // Listen for streams
+        tempStage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED, () => {
+          hasStreams = true;
+        });
+
+        // Join and check
+        await tempStage.join();
+
+        // Wait up to 3 seconds to see if streams come
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // Clean up
+        await tempStage.leave().catch(() => {});
+
+        console.log('IVS availability check:', hasStreams);
+        return hasStreams;
+      } catch(e) {
+        console.log('IVS availability check failed:', e);
+        return false;
+      }
+    }
+
     // ============ IVS WebRTC ============
     async function startIVS() {
       if (isManualStop) return;
@@ -278,16 +324,22 @@
           const iframe = document.getElementById('castr-iframe');
           const hasIframe = iframe && iframe.style.display !== 'none' && iframe.src && iframe.src !== 'about:blank';
 
-          // Also check if we've been on Castr too long - time to try IVS again
+          // Check if we've been on Castr too long - time to try IVS again
           const timeOnCastr = Date.now() - castrStartTime;
           const shouldSwitchBack = timeOnCastr > CASTR_TIMEOUT_MS;
 
           isHealthy = hasIframe && !shouldSwitchBack;
           console.log('Castr health check:', { hasIframe, src: iframe?.src, timeOnCastr, shouldSwitchBack });
 
-          if (shouldSwitchBack) {
-            console.log('Switching back to IVS after timeout on Castr');
-            handleStreamError();
+          // Try to reconnect to IVS in background to see if stream is back
+          if (!isHealthy) {
+            console.log('Checking if IVS is available...');
+            checkIVSAvailability().then(available => {
+              if (available) {
+                console.log('IVS is available! Switching back...');
+                handleStreamError();
+              }
+            });
           }
         }
 
