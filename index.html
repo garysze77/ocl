@@ -84,7 +84,11 @@
     }
 
     // ============ Check IVS Availability ============
+    let isCheckingIVS = false; // Prevent concurrent checks
     async function checkIVSAvailability() {
+      if (isCheckingIVS) return false;
+      isCheckingIVS = true;
+
       try {
         // Get token from backend
         const res = await fetch('/api/token', {
@@ -118,14 +122,18 @@
         // Wait up to 3 seconds to see if streams come
         await new Promise(resolve => setTimeout(resolve, 3000));
 
-        // Clean up
-        await tempStage.leave().catch(() => {});
+        // Clean up - use try-catch
+        try {
+          await tempStage.leave();
+        } catch(e) {}
 
         console.log('IVS availability check:', hasStreams);
         return hasStreams;
       } catch(e) {
         console.log('IVS availability check failed:', e);
         return false;
+      } finally {
+        isCheckingIVS = false;
       }
     }
 
@@ -328,19 +336,33 @@
           const timeOnCastr = Date.now() - castrStartTime;
           const shouldSwitchBack = timeOnCastr > CASTR_TIMEOUT_MS;
 
-          isHealthy = hasIframe && !shouldSwitchBack;
-          console.log('Castr health check:', { hasIframe, src: iframe?.src, timeOnCastr, shouldSwitchBack });
+          // If timeout, directly try IVS (don't use handleStreamError which loops!)
+          if (shouldSwitchBack && !isFailingOver) {
+            console.log('Timeout on Castr, trying IVS directly...');
+            isFailingOver = true;
+            setTimeout(() => {
+              stopCurrentStream();
+              startIVS();
+            }, 100);
+            return;
+          }
 
-          // Try to reconnect to IVS in background to see if stream is back
-          if (!isHealthy) {
-            console.log('Checking if IVS is available...');
+          // Proactive check: only check IVS availability every ~10 seconds (every 2nd check)
+          // This is to detect if IVS stream started while Castr is playing
+          const checkNumber = Math.floor(timeOnCastr / FAILOVER_CHECK_INTERVAL);
+          if (checkNumber % 2 === 0 && !isFailingOver) {
             checkIVSAvailability().then(available => {
               if (available) {
                 console.log('IVS is available! Switching back...');
-                handleStreamError();
+                isFailingOver = true;
+                stopCurrentStream();
+                startIVS();
               }
             });
           }
+
+          isHealthy = hasIframe;
+          console.log('Castr health check:', { hasIframe, src: iframe?.src, timeOnCastr, shouldSwitchBack });
         }
 
         if (!isHealthy) {
