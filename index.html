@@ -238,15 +238,19 @@
         clearInterval(healthCheckTimer);
       }
 
-      // Also listen for video track ended
+      // Also listen for video track ended - but only if we're on IVS
       videoEl.onended = () => {
-        console.log('Video ended event');
-        handleStreamError();
+        if (currentSource === 'ivs') {
+          console.log('Video ended event');
+          handleStreamError();
+        }
       };
 
       videoEl.onerror = () => {
-        console.log('Video error event');
-        handleStreamError();
+        if (currentSource === 'ivs') {
+          console.log('Video error event');
+          handleStreamError();
+        }
       };
 
       healthCheckTimer = setInterval(() => {
