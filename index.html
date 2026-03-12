@@ -19,7 +19,6 @@
 </head>
 <body>
   <div id="setup">
-    <h1>OCL PLAYER</h1>
     <div id="msg" style="margin-bottom: 15px; color: #888;">Loading SDK...</div>
     <button id="start" disabled>START</button>
   </div>
@@ -30,7 +29,7 @@
     // Wait for SDK to be ready
     function waitForSDK() {
       if (typeof IVSBroadcastClient !== 'undefined') {
-        document.getElementById('msg').textContent = 'SDK Ready';
+        document.getElementById('msg').textContent = 'Broadcast Ready';
         document.getElementById('msg').style.color = '#4caf50';
         document.getElementById('start').disabled = false;
         return;
