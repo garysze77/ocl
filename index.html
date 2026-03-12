@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>OCL Player</title>
   <script src="https://web-broadcast.live-video.net/1.32.0/amazon-ivs-web-broadcast.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, sans-serif; position: fixed; top: 0; left: 0; right: 0; bottom: 0; }
@@ -15,6 +16,11 @@
     #setup button:disabled { background: #666; }
     #player { display: none; width: 100%; height: 100%; position: fixed; top: 0; left: 0; }
     #player video { width: 100%; height: 100%; object-fit: contain; }
+    #status { position: fixed; top: 10px; left: 10px; padding: 8px 16px; background: rgba(0,0,0,0.7); color: #fff; border-radius: 4px; font-size: 12px; z-index: 1000; display: none; }
+    #status.ivs { background: #4caf50; }
+    #status.castr { background: #ff9800; }
+    #status.error { background: #f44336; }
+    #status.connecting { background: #2196f3; }
   </style>
 </head>
 <body>
@@ -23,12 +29,13 @@
     <button id="start" disabled>START</button>
   </div>
   <div id="player">
+    <div id="status">Initializing...</div>
     <video playsinline webkit-playsinline autoplay x5-playsinline controls></video>
   </div>
   <script>
-    // Wait for SDK to be ready
+    // Wait for SDK and HLS.js to be ready
     function waitForSDK() {
-      if (typeof IVSBroadcastClient !== 'undefined') {
+      if (typeof IVSBroadcastClient !== 'undefined' && typeof Hls !== 'undefined') {
         document.getElementById('msg').textContent = 'Broadcast Ready';
         document.getElementById('msg').style.color = '#4caf50';
         document.getElementById('start').disabled = false;
@@ -40,27 +47,54 @@
 
     waitForSDK();
 
-    let stage = null;
-    const videoEl = document.querySelector('video');
-
+    // ============ Configuration ============
     const STAGE_ARN = 'arn:aws:ivs:ap-northeast-1:763625926828:stage/x59Y2OJEUFpB';
+    const CASTR_STREAM_URL = 'https://ll-cf.castr.io/ss/ss_3adb5ce01d0611f18f5c5d66ad5600e2';
 
-    document.getElementById('start').onclick = async () => {
-      const arn = STAGE_ARN;
+    // Failover settings
+    const FAILOVER_CHECK_INTERVAL = 5000; // Check every 5 seconds
+    const MAX_RETRY_ATTEMPTS = 3;
+
+    // ============ State ============
+    let stage = null;
+    let hls = null;
+    let currentSource = 'ivs'; // 'ivs' | 'castr'
+    let retryAttempts = 0;
+    let failoverTimer = null;
+    let healthCheckTimer = null;
+    let isManualStop = false;
+
+    const videoEl = document.querySelector('video');
+    const statusEl = document.getElementById('status');
+
+    // ============ Status UI ============
+    function updateStatus(source, text) {
+      statusEl.style.display = 'block';
+      statusEl.className = source;
+      statusEl.textContent = text;
+      currentSource = source;
+    }
+
+    // ============ IVS WebRTC ============
+    async function startIVS() {
+      if (isManualStop) return;
+
+      updateStatus('connecting', 'Connecting to IVS...');
 
       try {
         // Get token from backend
         const res = await fetch('/api/token', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({stageArn: arn})
+          body: JSON.stringify({stageArn: STAGE_ARN})
         });
         const data = await res.json();
         const token = data.token;
 
         // Leave previous stage if any
         if (stage) {
-          await stage.leave();
+          try { await stage.leave(); } catch(e) {}
+          stage = null;
         }
 
         // Strategy for subscriber-only
@@ -72,16 +106,12 @@
             return false;
           },
           shouldSubscribeToParticipant(participant) {
-            return 'AUDIO_VIDEO'; // Subscribe to audio and video
+            return 'AUDIO_VIDEO';
           },
           videoConstraints: {
             maxResolution: { width: 1920, height: 1080 }
           }
         };
-
-        // Show player first
-        document.getElementById('setup').style.display = 'none';
-        document.getElementById('player').style.display = 'block';
 
         // Create stage and join
         stage = new IVSBroadcastClient.Stage(token, strategy);
@@ -90,37 +120,216 @@
         stage.on(
           IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED,
           (participant, streams) => {
-            console.log('Streams added:', streams);
+            console.log('IVS Streams added:', streams);
             videoEl.srcObject = new MediaStream();
             streams.forEach((stream) => {
               videoEl.srcObject.addTrack(stream.mediaStreamTrack);
             });
-            // Request fullscreen after video is ready - try multiple methods
-            const tryFullscreen = () => {
-              if (videoEl.requestFullscreen) {
-                videoEl.requestFullscreen().catch(() => {});
-              } else if (videoEl.webkitEnterFullscreen) {
-                videoEl.webkitEnterFullscreen();
-              } else if (document.documentElement.requestFullscreen) {
-                document.documentElement.requestFullscreen().catch(() => {});
-              }
-            };
-            // Try immediately and also with delay for iOS
+            updateStatus('ivs', 'IVS WebRTC');
+            retryAttempts = 0;
             tryFullscreen();
-            setTimeout(tryFullscreen, 500);
-            setTimeout(tryFullscreen, 1000);
+          }
+        );
+
+        // Listen for errors
+        stage.on(
+          IVSBroadcastClient.StageEvents.STAGE_ERROR,
+          (error) => {
+            console.error('IVS Error:', error);
+            handleStreamError();
+          }
+        );
+
+        // Listen for participant left
+        stage.on(
+          IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_LEFT,
+          (participant) => {
+            console.log('Participant left:', participant);
+            // Could trigger failover if no one left, but be careful
           }
         );
 
         // Join stage
         await stage.join();
+        updateStatus('ivs', 'IVS WebRTC');
+
+        // Start health check
+        startHealthCheck();
 
       } catch(e) {
-        console.error('Error:', e);
-        alert('Error: ' + e.message);
-        document.getElementById('setup').style.display = 'flex';
-        document.getElementById('player').style.display = 'none';
+        console.error('IVS Error:', e);
+        handleStreamError();
       }
+    }
+
+    // ============ Castr HLS ============
+    function startCastr() {
+      if (isManualStop) return;
+
+      updateStatus('connecting', 'Connecting to Castr...');
+
+      // Stop HLS if exists
+      if (hls) {
+        hls.destroy();
+        hls = null;
+      }
+
+      // Clear WebRTC
+      if (stage) {
+        try { stage.leave(); } catch(e) {}
+        stage = null;
+      }
+      videoEl.srcObject = null;
+
+      // Check if HLS is supported
+      if (Hls.isSupported()) {
+        hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+          backBufferLength: 90
+        });
+
+        hls.loadSource(CASTR_STREAM_URL);
+        hls.attachMedia(videoEl);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, (event, data) => {
+          console.log('Castr manifest loaded');
+          videoEl.play().catch(e => console.log('Autoplay blocked:', e));
+          updateStatus('castr', 'Castr HLS');
+          retryAttempts = 0;
+        });
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+          console.error('HLS Error:', data);
+          if (data.fatal) {
+            handleStreamError();
+          }
+        });
+
+        hls.on(Hls.Events.FRAG_LOADED, () => {
+          updateStatus('castr', 'Castr HLS');
+        });
+
+      } else if (videoEl.canPlayType('application/vnd.apple.mpegurl')) {
+        // Native HLS support (Safari)
+        videoEl.src = CASTR_STREAM_URL;
+        videoEl.addEventListener('loadedmetadata', () => {
+          videoEl.play().catch(e => {});
+          updateStatus('castr', 'Castr HLS');
+        });
+        videoEl.addEventListener('error', handleStreamError);
+      } else {
+        console.error('HLS not supported');
+        handleStreamError();
+        return;
+      }
+
+      // Start health check
+      startHealthCheck();
+    }
+
+    // ============ Health Check ============
+    function startHealthCheck() {
+      // Clear existing timer
+      if (healthCheckTimer) {
+        clearInterval(healthCheckTimer);
+      }
+
+      healthCheckTimer = setInterval(() => {
+        if (isManualStop) return;
+
+        let isHealthy = false;
+
+        if (currentSource === 'ivs') {
+          // Check if WebRTC has video
+          isHealthy = videoEl.readyState >= 2 && videoEl.videoWidth > 0;
+        } else if (currentSource === 'castr') {
+          // Check if HLS is still playing
+          isHealthy = videoEl.readyState >= 2 && !videoEl.paused && videoEl.duration > 0;
+        }
+
+        if (!isHealthy) {
+          console.log('Health check failed for', currentSource);
+          handleStreamError();
+        }
+      }, FAILOVER_CHECK_INTERVAL);
+    }
+
+    // ============ Failover Handler ============
+    function handleStreamError() {
+      if (isManualStop) return;
+
+      console.log('Stream error detected, current source:', currentSource);
+      retryAttempts++;
+
+      // Stop health check
+      if (healthCheckTimer) {
+        clearInterval(healthCheckTimer);
+      }
+
+      // Stop current stream
+      stopCurrentStream();
+
+      if (retryAttempts > MAX_RETRY_ATTEMPTS) {
+        updateStatus('error', 'Stream unavailable');
+        console.error('Max retry attempts reached');
+        return;
+      }
+
+      // Failover logic
+      updateStatus('connecting', `Failover attempt ${retryAttempts}...`);
+
+      if (currentSource === 'ivs') {
+        // Failover to Castr
+        console.log('Failing over to Castr...');
+        setTimeout(startCastr, 2000);
+      } else {
+        // Failover back to IVS
+        console.log('Failing over to IVS...');
+        setTimeout(startIVS, 2000);
+      }
+    }
+
+    function stopCurrentStream() {
+      // Stop WebRTC
+      if (stage) {
+        try { stage.leave(); } catch(e) {}
+        stage = null;
+      }
+
+      // Stop HLS
+      if (hls) {
+        hls.destroy();
+        hls = null;
+      }
+
+      // Clear video
+      videoEl.srcObject = null;
+      videoEl.src = '';
+    }
+
+    // ============ Fullscreen ============
+    function tryFullscreen() {
+      if (videoEl.requestFullscreen) {
+        videoEl.requestFullscreen().catch(() => {});
+      } else if (videoEl.webkitEnterFullscreen) {
+        videoEl.webkitEnterFullscreen();
+      } else if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      }
+    }
+
+    // ============ Main Start ============
+    document.getElementById('start').onclick = async () => {
+      isManualStop = false;
+      retryAttempts = 0;
+
+      // Show player
+      document.getElementById('setup').style.display = 'none';
+      document.getElementById('player').style.display = 'block';
+
+      // Start with IVS (default)
+      await startIVS();
     };
   </script>
 </body>
