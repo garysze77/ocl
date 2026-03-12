@@ -22,6 +22,8 @@
     #status.castr { background: #ff9800; }
     #status.error { background: #f44336; }
     #status.connecting { background: #2196f3; }
+    #retry-btn { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 20px 40px; font-size: 18px; background: #ff6b35; color: #fff; border: none; border-radius: 8px; cursor: pointer; z-index: 2000; display: none; }
+    #retry-btn:hover { background: #ff8c5a; }
   </style>
 </head>
 <body>
@@ -33,6 +35,7 @@
     <div id="status">Initializing...</div>
     <video playsinline webkit-playsinline autoplay x5-playsinline controls></video>
     <iframe id="castr-iframe" style="display:none;" allow="autoplay; fullscreen"></iframe>
+    <button id="retry-btn">Retry Stream</button>
   </div>
   <script>
     // Wait for SDK and HLS.js to be ready
@@ -319,6 +322,8 @@
       if (retryAttempts >= MAX_RETRY_ATTEMPTS) {
         updateStatus('error', 'Stream unavailable');
         console.error('Max retry attempts reached');
+        // Show retry button
+        document.getElementById('retry-btn').style.display = 'block';
         isFailingOver = false;
         return;
       }
@@ -391,8 +396,19 @@
       document.getElementById('setup').style.display = 'none';
       document.getElementById('player').style.display = 'block';
 
+      // Hide retry button
+      document.getElementById('retry-btn').style.display = 'none';
+
       // Start with IVS (default)
       await startIVS();
+    };
+
+    // Retry button handler
+    document.getElementById('retry-btn').onclick = () => {
+      retryAttempts = 0;
+      document.getElementById('retry-btn').style.display = 'none';
+      // Try IVS first
+      startIVS();
     };
   </script>
 </body>
