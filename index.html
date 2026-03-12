@@ -63,6 +63,7 @@
     let failoverTimer = null;
     let healthCheckTimer = null;
     let isManualStop = false;
+    let isFailingOver = false; // Flag to prevent concurrent failover
 
     const videoEl = document.querySelector('video');
     const statusEl = document.getElementById('status');
@@ -140,22 +141,18 @@
           }
         );
 
-        // Listen for participant left
+        // Listen for participant left - just trigger failover when anyone leaves
+        // (safer approach - assume stream ended)
         stage.on(
           IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_LEFT,
           (participant) => {
             console.log('Participant left:', participant);
-            // When a participant leaves, immediately check if any publisher remains
-            // If no publisher, we need to failover
-            setTimeout(() => {
-              const participants = stage.getParticipants();
-              const publishers = participants.filter(p => p.isPublishing);
-              console.log('Remaining publishers:', publishers.length);
-              if (publishers.length === 0) {
-                console.log('No publishers left, triggering failover');
-                handleStreamError();
-              }
-            }, 1000);
+            // When a participant leaves, trigger failover
+            // This is safer since we can't reliably check remaining participants
+            if (!isManualStop) {
+              console.log('Participant left, triggering failover');
+              handleStreamError();
+            }
           }
         );
 
@@ -164,11 +161,9 @@
           IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_REMOVED,
           (participant, streams) => {
             console.log('Streams removed:', streams);
-            // Check if there are still any streams
-            const participants = stage.getParticipants();
-            const hasStreams = participants.some(p => p.streams && p.streams.length > 0);
-            if (!hasStreams) {
-              console.log('All streams removed, triggering failover');
+            // Trigger failover when streams are removed
+            if (!isManualStop) {
+              console.log('Streams removed, triggering failover');
               handleStreamError();
             }
           }
@@ -176,17 +171,7 @@
 
         // Join stage
         await stage.join();
-
-        // Check if there's already a participant with streams
-        const participants = stage.getParticipants();
-        const hasStreams = participants.some(p => p.streams && p.streams.length > 0);
-        if (!hasStreams) {
-          // Wait for streams, but set a timeout
-          console.log('No streams yet, waiting...');
-          updateStatus('connecting', 'Waiting for stream...');
-        } else {
-          updateStatus('ivs', 'IVS WebRTC');
-        }
+        updateStatus('ivs', 'IVS WebRTC');
 
         // Start health check
         startHealthCheck();
@@ -306,37 +291,52 @@
 
     // ============ Failover Handler ============
     function handleStreamError() {
-      if (isManualStop) return;
+      // Prevent multiple concurrent failover attempts
+      if (isFailingOver || isManualStop) {
+        console.log('Already failing over or stopped, ignoring');
+        return;
+      }
 
+      isFailingOver = true;
       console.log('Stream error detected, current source:', currentSource);
-      retryAttempts++;
 
       // Stop health check
       if (healthCheckTimer) {
         clearInterval(healthCheckTimer);
+        healthCheckTimer = null;
       }
 
       // Stop current stream
       stopCurrentStream();
 
-      if (retryAttempts > MAX_RETRY_ATTEMPTS) {
+      // If retry attempts exceeded, show error and stop
+      if (retryAttempts >= MAX_RETRY_ATTEMPTS) {
         updateStatus('error', 'Stream unavailable');
         console.error('Max retry attempts reached');
+        isFailingOver = false;
         return;
       }
 
-      // Failover logic
+      retryAttempts++;
       updateStatus('connecting', `Failover attempt ${retryAttempts}...`);
 
-      if (currentSource === 'ivs') {
-        // Failover to Castr
+      // Determine next source
+      let nextFunction;
+      if (currentSource === 'ivs' || currentSource === 'connecting') {
+        // First try: IVS -> Castr, Second try: stay on Castr
         console.log('Failing over to Castr...');
-        setTimeout(startCastr, 2000);
+        nextFunction = startCastr;
       } else {
-        // Failover back to IVS
+        // Castr failed, go back to IVS
         console.log('Failing over to IVS...');
-        setTimeout(startIVS, 2000);
+        nextFunction = startIVS;
       }
+
+      // Execute failover after delay
+      setTimeout(() => {
+        isFailingOver = false;
+        nextFunction();
+      }, 2000);
     }
 
     function stopCurrentStream() {
