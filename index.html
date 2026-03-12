@@ -310,19 +310,16 @@
       retryAttempts++;
       updateStatus('connecting', `Failover attempt ${retryAttempts}...`);
 
-      // Determine next source based on what we're currently on
-      // We need to know what failed - check what the source was BEFORE we set to 'connecting'
+      // Determine next source
+      // If on IVS or connecting → try Castr
+      // If on Castr → go back to IVS
       let nextFunction;
-      const previousSource = retryAttempts === 1 && currentSource === 'connecting' ? 'ivs' : currentSource;
-
-      if (previousSource === 'ivs' || previousSource === 'connecting') {
-        // First try: IVS -> Castr, Second try: stay on Castr
-        console.log('Failing over to Castr...');
-        nextFunction = startCastr;
-      } else {
-        // Castr failed, go back to IVS
+      if (currentSource === 'castr') {
         console.log('Failing over to IVS...');
         nextFunction = startIVS;
+      } else {
+        console.log('Failing over to Castr...');
+        nextFunction = startCastr;
       }
 
       // Execute failover after delay
