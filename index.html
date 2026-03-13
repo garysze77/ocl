@@ -109,11 +109,23 @@
         };
 
         const tempStage = new IVSBroadcastClient.Stage(token, strategy);
-        let hasStreams = false;
+        let hasVideoStream = false;
+        let hasAudioStream = false;
 
-        // Listen for streams
-        tempStage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED, () => {
-          hasStreams = true;
+        // Listen for streams - only count if we actually get video or audio
+        tempStage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED, (participant, streams) => {
+          console.log('Streams added event:', participant, streams);
+          if (streams.videoTracks && streams.videoTracks.size > 0) {
+            hasVideoStream = true;
+          }
+          if (streams.audioTracks && streams.audioTracks.size > 0) {
+            hasAudioStream = true;
+          }
+        });
+
+        // Also check for participants joining
+        tempStage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_JOINED, (participant) => {
+          console.log('Participant joined:', participant);
         });
 
         // Join and check
@@ -127,8 +139,10 @@
           await tempStage.leave();
         } catch(e) {}
 
-        console.log('IVS availability check:', hasStreams);
-        return hasStreams;
+        // Need BOTH video and audio to consider it available
+        const isAvailable = hasVideoStream && hasAudioStream;
+        console.log('IVS availability check:', { hasVideoStream, hasAudioStream, isAvailable });
+        return isAvailable;
       } catch(e) {
         console.log('IVS availability check failed:', e);
         return false;
