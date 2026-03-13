@@ -272,6 +272,9 @@
         // Start health check
         startHealthCheck();
 
+        // Reset failover flag so we can detect future failures
+        isFailingOver = false;
+
       } catch(e) {
         console.error('IVS Error:', e);
         handleStreamError();
@@ -331,6 +334,9 @@
 
       // Also start health check immediately
       startHealthCheck();
+
+      // Reset failover flag so we can detect future failures
+      isFailingOver = false;
     }
 
     // ============ Health Check ============
