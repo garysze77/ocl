@@ -24,8 +24,6 @@
     #status.connecting { background: #2196f3; }
     #retry-btn { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 20px 40px; font-size: 18px; background: #ff6b35; color: #fff; border: none; border-radius: 8px; cursor: pointer; z-index: 2000; display: none; }
     #retry-btn:hover { background: #ff8c5a; }
-    #ios-play-btn { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 30px 50px; font-size: 24px; background: #ff6b35; color: #fff; border: none; border-radius: 12px; cursor: pointer; z-index: 2000; display: none; }
-    #ios-play-btn:active { background: #ff8c5a; }
   </style>
 </head>
 <body>
@@ -38,7 +36,6 @@
     <video playsinline webkit-playsinline autoplay x5-playsinline controls></video>
     <iframe id="castr-iframe" style="display:none;" allow="autoplay; fullscreen"></iframe>
     <button id="retry-btn">Retry Stream</button>
-    <button id="ios-play-btn">Tap to Play</button>
   </div>
   <script>
     // Wait for SDK and HLS.js to be ready
@@ -77,20 +74,6 @@
 
     const videoEl = document.querySelector('video');
     const statusEl = document.getElementById('status');
-
-    // ============ iOS Detection ============
-    function isIOS() {
-      return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    }
-
-    function showIOSPlayButton() {
-      if (!isIOS()) return;
-      const btn = document.getElementById('ios-play-btn');
-      btn.style.display = 'block';
-      btn.onclick = () => {
-        btn.style.display = 'none';
-      };
-    }
 
     // ============ Status UI ============
     function updateStatus(source, text) {
@@ -201,9 +184,6 @@
       const iframe = document.getElementById('castr-iframe');
       iframe.src = 'about:blank';
       iframe.style.display = 'none';
-
-      // Hide iOS play button
-      document.getElementById('ios-play-btn').style.display = 'none';
 
       // Clear video error handlers to prevent interference
       videoEl.onerror = null;
@@ -327,10 +307,9 @@
       iframe.style.display = 'block';
       iframe.src = CASTR_PLAYER_URL;
 
-      // Show iOS play button (iOS requires user interaction to autoplay)
+      // Show status when Castr loads
       iframe.onload = () => {
         updateStatus('castr', 'Castr');
-        showIOSPlayButton();
       };
 
       // Listen for iframe load error
@@ -385,24 +364,30 @@
           // Check if WebRTC has video - also check if stream is active
           const hasVideo = videoEl.srcObject && videoEl.srcObject.getVideoTracks().length > 0;
           const isPlaying = videoEl.readyState >= 2 && !videoEl.paused;
-          isHealthy = hasVideo && isPlaying;
-          console.log('IVS health check:', { hasVideo, isPlaying, readyState: videoEl.readyState, videoWidth: videoEl.videoWidth });
+          // Also check if video has actual content (width > 0)
+          const hasContent = videoEl.videoWidth > 0 && videoEl.videoHeight > 0;
+          isHealthy = hasVideo && isPlaying && hasContent;
+          console.log('IVS health check:', { hasVideo, isPlaying, readyState: videoEl.readyState, videoWidth: videoEl.videoWidth, hasContent });
         } else if (currentSource === 'castr') {
           // Check if iframe is loaded (Castr via iframe)
           const iframe = document.getElementById('castr-iframe');
           const hasIframe = iframe && iframe.style.display !== 'none' && iframe.src && iframe.src !== 'about:blank';
 
-          // Proactive check: only check IVS availability every ~10 seconds (every 2nd check)
-          // This is to detect if IVS stream started while Castr is playing
+          // Check if IVS stream is available
           const timeOnCastr = Date.now() - castrStartTime;
           const checkNumber = Math.floor(timeOnCastr / FAILOVER_CHECK_INTERVAL);
-          if (checkNumber % 2 === 0 && !isFailingOver) {
+
+          // Every check: if IVS has stream, switch back to IVS
+          if (!isFailingOver) {
             checkIVSAvailability().then(available => {
               if (available) {
                 console.log('IVS is available! Switching back...');
                 isFailingOver = true;
                 stopCurrentStream();
                 startIVS();
+              } else {
+                // IVS not available - if we were on IVS, try Castr
+                console.log('IVS not available, staying on Castr');
               }
             });
           }
