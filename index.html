@@ -121,13 +121,18 @@
         // Listen for streams - only count if we actually get remote streams (not local!)
         tempStage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED, (participant, streams) => {
           console.log('Streams added:', { participantId: participant.id, isLocal: participant.isLocal, streams });
-          // Only count remote participants
-          if (!participant.isLocal) {
-            if (streams.videoTracks && streams.videoTracks.size > 0) {
-              hasVideoStream = true;
-            }
-            if (streams.audioTracks && streams.audioTracks.size > 0) {
-              hasAudioStream = true;
+          // Only count remote participants and handle array of streams
+          if (!participant.isLocal && Array.isArray(streams)) {
+            for (const stream of streams) {
+              console.log('Stream details:', stream);
+              // Check stream type - could be streamType, kind, or track kind
+              const streamType = stream.streamType || stream.kind || stream.track?.kind;
+              if (streamType === 'video') {
+                hasVideoStream = true;
+              }
+              if (streamType === 'audio') {
+                hasAudioStream = true;
+              }
             }
           }
         });
