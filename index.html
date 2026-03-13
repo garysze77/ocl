@@ -89,6 +89,8 @@
       if (isCheckingIVS) return false;
       isCheckingIVS = true;
 
+      console.log('=== Checking IVS availability ===');
+
       try {
         // Get token from backend
         const res = await fetch('/api/token', {
@@ -96,9 +98,13 @@
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({stageArn: STAGE_ARN})
         });
-        if (!res.ok) return false;
+        if (!res.ok) {
+          console.log('Token fetch failed:', res.status);
+          return false;
+        }
         const data = await res.json();
         const token = data.token;
+        console.log('Token received');
 
         // Create a temporary stage to check availability
         const strategy = {
@@ -112,24 +118,33 @@
         let hasVideoStream = false;
         let hasAudioStream = false;
 
-        // Listen for streams - only count if we actually get video or audio
+        // Listen for streams - only count if we actually get remote streams (not local!)
         tempStage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED, (participant, streams) => {
-          console.log('Streams added event:', participant, streams);
-          if (streams.videoTracks && streams.videoTracks.size > 0) {
-            hasVideoStream = true;
-          }
-          if (streams.audioTracks && streams.audioTracks.size > 0) {
-            hasAudioStream = true;
+          console.log('Streams added:', { participantId: participant.id, isLocal: participant.isLocal, streams });
+          // Only count remote participants
+          if (!participant.isLocal) {
+            if (streams.videoTracks && streams.videoTracks.size > 0) {
+              hasVideoStream = true;
+            }
+            if (streams.audioTracks && streams.audioTracks.size > 0) {
+              hasAudioStream = true;
+            }
           }
         });
 
-        // Also check for participants joining
+        // Also listen for participants
         tempStage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_JOINED, (participant) => {
-          console.log('Participant joined:', participant);
+          console.log('Participant joined:', { id: participant.id, isLocal: participant.isLocal });
+        });
+
+        // Listen for stage connection
+        tempStage.on(IVSBroadcastClient.StageEvents.STAGE_CONNECTION_STATE_CHANGE, (state) => {
+          console.log('Stage connection state:', state);
         });
 
         // Join and check
         await tempStage.join();
+        console.log('Joined stage');
 
         // Wait up to 3 seconds to see if streams come
         await new Promise(resolve => setTimeout(resolve, 3000));
@@ -141,7 +156,7 @@
 
         // Need BOTH video and audio to consider it available
         const isAvailable = hasVideoStream && hasAudioStream;
-        console.log('IVS availability check:', { hasVideoStream, hasAudioStream, isAvailable });
+        console.log('=== IVS availability check result:', { hasVideoStream, hasAudioStream, isAvailable });
         return isAvailable;
       } catch(e) {
         console.log('IVS availability check failed:', e);
