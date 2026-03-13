@@ -24,6 +24,8 @@
     #status.connecting { background: #2196f3; }
     #retry-btn { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 20px 40px; font-size: 18px; background: #ff6b35; color: #fff; border: none; border-radius: 8px; cursor: pointer; z-index: 2000; display: none; }
     #retry-btn:hover { background: #ff8c5a; }
+    #ios-play-btn { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 30px 50px; font-size: 24px; background: #ff6b35; color: #fff; border: none; border-radius: 12px; cursor: pointer; z-index: 2000; display: none; }
+    #ios-play-btn:active { background: #ff8c5a; }
   </style>
 </head>
 <body>
@@ -36,6 +38,7 @@
     <video playsinline webkit-playsinline autoplay x5-playsinline controls></video>
     <iframe id="castr-iframe" style="display:none;" allow="autoplay; fullscreen"></iframe>
     <button id="retry-btn">Retry Stream</button>
+    <button id="ios-play-btn">Tap to Play</button>
   </div>
   <script>
     // Wait for SDK and HLS.js to be ready
@@ -74,6 +77,20 @@
 
     const videoEl = document.querySelector('video');
     const statusEl = document.getElementById('status');
+
+    // ============ iOS Detection ============
+    function isIOS() {
+      return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    }
+
+    function showIOSPlayButton() {
+      if (!isIOS()) return;
+      const btn = document.getElementById('ios-play-btn');
+      btn.style.display = 'block';
+      btn.onclick = () => {
+        btn.style.display = 'none';
+      };
+    }
 
     // ============ Status UI ============
     function updateStatus(source, text) {
@@ -184,6 +201,9 @@
       const iframe = document.getElementById('castr-iframe');
       iframe.src = 'about:blank';
       iframe.style.display = 'none';
+
+      // Hide iOS play button
+      document.getElementById('ios-play-btn').style.display = 'none';
 
       // Clear video error handlers to prevent interference
       videoEl.onerror = null;
@@ -306,6 +326,12 @@
       const iframe = document.getElementById('castr-iframe');
       iframe.style.display = 'block';
       iframe.src = CASTR_PLAYER_URL;
+
+      // Show iOS play button (iOS requires user interaction to autoplay)
+      iframe.onload = () => {
+        updateStatus('castr', 'Castr');
+        showIOSPlayButton();
+      };
 
       // Listen for iframe load error
       iframe.onerror = () => {
