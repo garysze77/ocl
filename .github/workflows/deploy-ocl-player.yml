@@ -23,6 +23,10 @@ jobs:
           # wrangler 4.158+ 要求 Node >= 22
           node-version: 22
 
+      - name: npm ci
+        # src/worker.js 有 import aws4fetch 等依賴；唔裝就 bundle 唔到
+        run: npm ci
+
       - name: wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
