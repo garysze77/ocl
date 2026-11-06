@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OCL Player</title>
+  <script src="https://web-broadcast.live-video.net/1.32.0/amazon-ivs-web-broadcast.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #000; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, sans-serif; position: fixed; top: 0; left: 0; right: 0; bottom: 0; }
+    #setup { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: linear-gradient(135deg, #1a1a2e, #16213e); color: #fff; }
+    #setup h1 { margin-bottom: 20px; }
+    #setup input { padding: 15px; font-size: 16px; border-radius: 8px; border: none; background: rgba(255,255,255,0.1); color: #fff; width: 90%; max-width: 400px; margin-bottom: 15px; }
+    #setup button { padding: 15px 30px; font-size: 16px; background: #ff6b35; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
+    #setup button:disabled { background: #666; }
+    #player { display: none; width: 100%; height: 100%; position: fixed; top: 0; left: 0; }
+    #player video { width: 100%; height: 100%; object-fit: contain; }
+    #player iframe { width: 100%; height: 100%; border: none; }
+    #status { position: fixed; top: 10px; left: 10px; padding: 8px 16px; background: rgba(0,0,0,0.7); color: #fff; border-radius: 4px; font-size: 12px; z-index: 1000; display: none; }
+    #status.ivs { background: #4caf50; }
+    #status.castr { background: #ff9800; }
+    #status.error { background: #f44336; }
+    #status.connecting { background: #2196f3; }
+    #retry-btn { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 20px 40px; font-size: 18px; background: #ff6b35; color: #fff; border: none; border-radius: 8px; cursor: pointer; z-index: 2000; display: none; }
+    #retry-btn:hover { background: #ff8c5a; }
+  </style>
+</head>
+<body>
+  <div id="setup">
+    <div id="msg" style="display:none;">Loading SDK...</div>
+    <button id="start" disabled>START</button>
+  </div>
+  <div id="player">
+    <div id="status" style="display:none;">Initializing...</div>
+    <video playsinline webkit-playsinline autoplay x5-playsinline controls></video>
+    <iframe id="castr-iframe" style="display:none;" allow="autoplay; fullscreen"></iframe>
+    <button id="retry-btn">Retry Stream</button>
+  </div>
+  <script>
+    // Wait for SDK and HLS.js to be ready
+    function waitForSDK() {
+      if (typeof IVSBroadcastClient !== 'undefined' && typeof Hls !== 'undefined') {
+        document.getElementById('msg').textContent = 'Broadcast Ready';
+        document.getElementById('msg').style.color = '#4caf50';
+        document.getElementById('start').disabled = false;
+        return;
+      }
+      document.getElementById('msg').textContent = 'Loading SDK...';
+      setTimeout(waitForSDK, 200);
+    }
+
+    waitForSDK();
+
+    // ============ Configuration ============
+    const STAGE_ARN = 'arn:aws:ivs:ap-northeast-1:763625926828:stage/x59Y2OJEUFpB';
+    const CASTR_PLAYER_URL = 'https://player.castr.com/ss_3adb5ce01d0611f18f5c5d66ad5600e2';
+
+    // Failover settings
+    const FAILOVER_CHECK_INTERVAL = 5000; // Check every 5 seconds
+    const MAX_RETRY_ATTEMPTS = 3;
+    const CASTR_TIMEOUT_MS = 15000; // Switch back to IVS after 15 seconds on Castr
+
+    // ============ State ============
+    let stage = null;
+    let hls = null;
+    let currentSource = 'ivs'; // 'ivs' | 'castr'
+    let retryAttempts = 0;
+    let failoverTimer = null;
+    let healthCheckTimer = null;
+    let isManualStop = false;
+    let isFailingOver = false; // Flag to prevent concurrent failover
+    let castrStartTime = 0; // Track when we switched to Castr
+
+    const videoEl = document.querySelector('video');
+    const statusEl = document.getElementById('status');
+
+    // ============ Status UI ============
+    function updateStatus(source, text) {
+      // Status hidden - keeping function for potential future use
+      currentSource = source;
+    }
+
+    // ============ Check IVS Availability ============
+    let isCheckingIVS = false; // Prevent concurrent checks
+    async function checkIVSAvailability() {
+      if (isCheckingIVS) return false;
+      isCheckingIVS = true;
+
+      console.log('=== Checking IVS availability ===');
+
+      try {
+        // Get token from backend
+        const res = await fetch('/api/token', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({stageArn: STAGE_ARN})
+        });
+        if (!res.ok) {
+          console.log('Token fetch failed:', res.status);
+          return false;
+        }
+        const data = await res.json();
+        const token = data.token;
+        console.log('Token received');
+
+        // Create a temporary stage to check availability
+        const strategy = {
+          stageStreamsToPublish() { return []; },
+          shouldPublishParticipant() { return false; },
+          shouldSubscribeToParticipant() { return 'AUDIO_VIDEO'; },
+          videoConstraints: { maxResolution: { width: 1920, height: 1080 } }
+        };
+
+        const tempStage = new IVSBroadcastClient.Stage(token, strategy);
+        let hasVideoStream = false;
+        let hasAudioStream = false;
+
+        // Listen for streams - only count if we actually get remote streams (not local!)
+        tempStage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED, (participant, streams) => {
+          console.log('Streams added:', { participantId: participant.id, isLocal: participant.isLocal, streams });
+          // Only count remote participants and handle array of streams
+          if (!participant.isLocal && Array.isArray(streams)) {
+            for (const stream of streams) {
+              console.log('Stream details:', stream);
+              // Check stream type - could be streamType, kind, or track kind
+              const streamType = stream.streamType || stream.kind || stream.track?.kind;
+              if (streamType === 'video') {
+                hasVideoStream = true;
+              }
+              if (streamType === 'audio') {
+                hasAudioStream = true;
+              }
+            }
+          }
+        });
+
+        // Also listen for participants
+        tempStage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_JOINED, (participant) => {
+          console.log('Participant joined:', { id: participant.id, isLocal: participant.isLocal });
+        });
+
+        // Listen for stage connection
+        tempStage.on(IVSBroadcastClient.StageEvents.STAGE_CONNECTION_STATE_CHANGE, (state) => {
+          console.log('Stage connection state:', state);
+        });
+
+        // Join and check
+        await tempStage.join();
+        console.log('Joined stage');
+
+        // Wait up to 3 seconds to see if streams come
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // Clean up - use try-catch
+        try {
+          await tempStage.leave();
+        } catch(e) {}
+
+        // Need BOTH video and audio to consider it available
+        const isAvailable = hasVideoStream && hasAudioStream;
+        console.log('=== IVS availability check result:', { hasVideoStream, hasAudioStream, isAvailable });
+        return isAvailable;
+      } catch(e) {
+        console.log('IVS availability check failed:', e);
+        return false;
+      } finally {
+        isCheckingIVS = false;
+      }
+    }
+
+    // ============ IVS WebRTC ============
+    async function startIVS() {
+      if (isManualStop) return;
+
+      updateStatus('connecting', 'Connecting to IVS...');
+
+      // Reset Castr timer
+      castrStartTime = 0;
+
+      // Clear iframe first
+      const iframe = document.getElementById('castr-iframe');
+      iframe.src = 'about:blank';
+      iframe.style.display = 'none';
+
+      // Clear video error handlers to prevent interference
+      videoEl.onerror = null;
+      videoEl.onended = null;
+      videoEl.style.display = 'block';
+
+      try {
+        // Get token from backend
+        const res = await fetch('/api/token', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({stageArn: STAGE_ARN})
+        });
+        const data = await res.json();
+        const token = data.token;
+
+        // Leave previous stage if any
+        if (stage) {
+          try { await stage.leave(); } catch(e) {}
+          stage = null;
+        }
+
+        // Strategy for subscriber-only
+        const strategy = {
+          stageStreamsToPublish() {
+            return [];
+          },
+          shouldPublishParticipant() {
+            return false;
+          },
+          shouldSubscribeToParticipant(participant) {
+            return 'AUDIO_VIDEO';
+          },
+          videoConstraints: {
+            maxResolution: { width: 1920, height: 1080 }
+          }
+        };
+
+        // Create stage and join
+        stage = new IVSBroadcastClient.Stage(token, strategy);
+
+        // Listen for streams
+        stage.on(
+          IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_ADDED,
+          (participant, streams) => {
+            console.log('IVS Streams added:', streams);
+            videoEl.srcObject = new MediaStream();
+            streams.forEach((stream) => {
+              videoEl.srcObject.addTrack(stream.mediaStreamTrack);
+            });
+            updateStatus('ivs', 'IVS WebRTC');
+            retryAttempts = 0;
+            tryFullscreen();
+          }
+        );
+
+        // Listen for errors
+        stage.on(
+          IVSBroadcastClient.StageEvents.STAGE_ERROR,
+          (error) => {
+            console.error('IVS Error:', error);
+            handleStreamError();
+          }
+        );
+
+        // Listen for participant left - trigger failover when participant leaves
+        stage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_LEFT, (participant) => {
+          console.log('Participant left:', participant);
+          if (!isManualStop && stage) {
+            handleStreamError();
+          }
+        });
+
+        // Also listen for streams removed
+        stage.on(IVSBroadcastClient.StageEvents.STAGE_PARTICIPANT_STREAMS_REMOVED, (participant, streams) => {
+          console.log('Streams removed:', streams);
+          if (!isManualStop && stage) {
+            handleStreamError();
+          }
+        });
+
+        // Join stage
+        await stage.join();
+        updateStatus('ivs', 'IVS WebRTC');
+
+        // Start health check
+        startHealthCheck();
+
+        // Reset failover flag so we can detect future failures
+        isFailingOver = false;
+
+      } catch(e) {
+        console.error('IVS Error:', e);
+        handleStreamError();
+      }
+    }
+
+    // ============ Castr (via iframe) ============
+    function startCastr() {
+      if (isManualStop) return;
+
+      updateStatus('connecting', 'Connecting to Castr...');
+
+      // Clear video error handlers first to prevent interference
+      videoEl.onerror = null;
+      videoEl.onended = null;
+
+      // Stop HLS if exists
+      if (hls) {
+        hls.destroy();
+        hls = null;
+      }
+
+      // Clear WebRTC
+      if (stage) {
+        try { stage.leave(); } catch(e) {}
+        stage = null;
+      }
+      videoEl.srcObject = null;
+      videoEl.style.display = 'none';
+
+      // Use iframe to embed Castr player
+      const iframe = document.getElementById('castr-iframe');
+      iframe.style.display = 'block';
+      iframe.src = CASTR_PLAYER_URL;
+
+      // Show status when Castr loads
+      iframe.onload = () => {
+        updateStatus('castr', 'Castr');
+      };
+
+      // Listen for iframe load error
+      iframe.onerror = () => {
+        console.error('Castr iframe failed to load');
+        handleStreamError();
+      };
+
+      // Wait a bit and check if iframe loaded
+      setTimeout(() => {
+        if (iframe.src && iframe.src !== 'about:blank') {
+          updateStatus('castr', 'Castr');
+          retryAttempts = 0;
+          castrStartTime = Date.now(); // Record when we switched to Castr
+          // Start health check for iframe
+          startHealthCheck();
+        }
+      }, 3000);
+
+      // Also start health check immediately
+      startHealthCheck();
+
+      // Reset failover flag so we can detect future failures
+      isFailingOver = false;
+    }
+
+    // ============ Health Check ============
+    function startHealthCheck() {
+      // Clear existing timer
+      if (healthCheckTimer) {
+        clearInterval(healthCheckTimer);
+      }
+
+      // Also listen for video track ended - but only if we're on IVS
+      videoEl.onended = () => {
+        if (currentSource === 'ivs') {
+          console.log('Video ended event');
+          handleStreamError();
+        }
+      };
+
+      videoEl.onerror = () => {
+        if (currentSource === 'ivs') {
+          console.log('Video error event');
+          handleStreamError();
+        }
+      };
+
+      healthCheckTimer = setInterval(() => {
+        if (isManualStop) return;
+
+        let isHealthy = false;
+
+        if (currentSource === 'ivs') {
+          // Check if WebRTC has video - also check if stream is active
+          const hasVideo = videoEl.srcObject && videoEl.srcObject.getVideoTracks().length > 0;
+          const isPlaying = videoEl.readyState >= 2 && !videoEl.paused;
+          // Also check if video has actual content (width > 0)
+          const hasContent = videoEl.videoWidth > 0 && videoEl.videoHeight > 0;
+          isHealthy = hasVideo && isPlaying && hasContent;
+          console.log('IVS health check:', { hasVideo, isPlaying, readyState: videoEl.readyState, videoWidth: videoEl.videoWidth, hasContent });
+        } else if (currentSource === 'castr') {
+          // Check if iframe is loaded (Castr via iframe)
+          const iframe = document.getElementById('castr-iframe');
+          const hasIframe = iframe && iframe.style.display !== 'none' && iframe.src && iframe.src !== 'about:blank';
+
+          // Check if IVS stream is available
+          const timeOnCastr = Date.now() - castrStartTime;
+          const checkNumber = Math.floor(timeOnCastr / FAILOVER_CHECK_INTERVAL);
+
+          // Every check: if IVS has stream, switch back to IVS
+          if (!isFailingOver) {
+            checkIVSAvailability().then(available => {
+              if (available) {
+                console.log('IVS is available! Switching back...');
+                isFailingOver = true;
+                stopCurrentStream();
+                startIVS();
+              } else {
+                // IVS not available - if we were on IVS, try Castr
+                console.log('IVS not available, staying on Castr');
+              }
+            });
+          }
+
+          // Castr is always healthy - only switch back to IVS if IVS has stream
+          isHealthy = hasIframe;
+          console.log('Castr health check:', { hasIframe, src: iframe?.src });
+        }
+
+        if (!isHealthy) {
+          console.log('Health check failed for', currentSource);
+          handleStreamError();
+        }
+      }, FAILOVER_CHECK_INTERVAL);
+    }
+
+    // ============ Failover Handler ============
+    function handleStreamError() {
+      // Prevent multiple concurrent failover attempts
+      if (isFailingOver || isManualStop) {
+        console.log('Already failing over or stopped, ignoring');
+        return;
+      }
+
+      isFailingOver = true;
+      console.log('Stream error detected, current source:', currentSource);
+
+      // Stop health check
+      if (healthCheckTimer) {
+        clearInterval(healthCheckTimer);
+        healthCheckTimer = null;
+      }
+
+      // Stop current stream
+      stopCurrentStream();
+
+      // If retry attempts exceeded, show error and stop
+      if (retryAttempts >= MAX_RETRY_ATTEMPTS) {
+        updateStatus('error', 'Stream unavailable');
+        console.error('Max retry attempts reached');
+        // Show retry button
+        document.getElementById('retry-btn').style.display = 'block';
+        isFailingOver = false;
+        return;
+      }
+
+      retryAttempts++;
+      updateStatus('connecting', `Failover attempt ${retryAttempts}...`);
+
+      // Determine next source
+      // If on IVS or connecting → try Castr
+      // If on Castr → go back to IVS
+      let nextFunction;
+      if (currentSource === 'castr') {
+        console.log('Failing over to IVS...');
+        nextFunction = startIVS;
+      } else {
+        console.log('Failing over to Castr...');
+        nextFunction = startCastr;
+      }
+
+      // Execute failover after delay
+      setTimeout(() => {
+        isFailingOver = false;
+        nextFunction();
+      }, 2000);
+    }
+
+    function stopCurrentStream() {
+      // Stop WebRTC
+      if (stage) {
+        try { stage.leave(); } catch(e) {}
+        stage = null;
+      }
+
+      // Stop HLS
+      if (hls) {
+        hls.destroy();
+        hls = null;
+      }
+
+      // Clear video and remove error handlers to prevent infinite loops
+      videoEl.onerror = null;
+      videoEl.onended = null;
+      videoEl.srcObject = null;
+      videoEl.src = '';
+      videoEl.style.display = 'block';
+
+      // Clear iframe
+      const iframe = document.getElementById('castr-iframe');
+      iframe.src = 'about:blank';
+      iframe.style.display = 'none';
+    }
+
+    // ============ Fullscreen ============
+    function tryFullscreen() {
+      if (videoEl.requestFullscreen) {
+        videoEl.requestFullscreen().catch(() => {});
+      } else if (videoEl.webkitEnterFullscreen) {
+        videoEl.webkitEnterFullscreen();
+      } else if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+      }
+    }
+
+    // ============ Main Start ============
+    document.getElementById('start').onclick = async () => {
+      isManualStop = false;
+      retryAttempts = 0;
+
+      // Show player
+      document.getElementById('setup').style.display = 'none';
+      document.getElementById('player').style.display = 'block';
+
+      // Hide retry button
+      document.getElementById('retry-btn').style.display = 'none';
+
+      // Start with IVS (default)
+      await startIVS();
+    };
+
+    // Retry button handler
+    document.getElementById('retry-btn').onclick = () => {
+      retryAttempts = 0;
+      document.getElementById('retry-btn').style.display = 'none';
+      // Try IVS first
+      startIVS();
+    };
+  </script>
+</body>
+</html>
