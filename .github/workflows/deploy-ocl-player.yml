@@ -1,0 +1,30 @@
+name: Deploy ocl-player
+
+# 純 Worker（src/worker.js，冇 build step）：push 到 master 就直接 wrangler deploy。
+on:
+  push:
+    branches: [master]
+    paths-ignore: ["**.md", "docs/**", ".gitignore"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ocl-player
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # wrangler 4.158+ 要求 Node >= 22
+          node-version: 22
+
+      - name: wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: bdab18a1ced55dc8024acf6a7193c1b4
+        run: npx --yes wrangler@4 deploy
